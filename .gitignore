@@ -1,0 +1,6 @@
+build/bin
+node_modules
+frontend/dist
+frontend/.DS_Store
+internal/.DS_Store
+build/.DS_Store
