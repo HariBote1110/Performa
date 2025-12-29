@@ -2,18 +2,38 @@ package app
 
 import (
 	"fmt"
+	"time"
+
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/net"
 )
 
 // データ取得に必要な変数をここに定義します
 var (
 	firstRun     = true
-	// 修正: 型を cpu.TimesStat から、types.goで定義した CPUUsage に変更
 	lastCPUTimes []CPUUsage
+
+	// Network metrics state
+	lastNetStats []net.IOCountersStat
+	lastNetTime  time.Time
+
+	// Disk metrics state
+	lastDiskStats map[string]disk.IOCountersStat
+	lastDiskTime  time.Time
 )
 
 // InitSocMetrics: ハードウェアレポートシステム（ioreport）の初期化
 func InitSocMetrics() error {
+	// ネットワーク統計の初期値をセット
+	lastNetStats, _ = net.IOCounters(false)
+	lastNetTime = time.Now()
+
+	// ディスク統計の初期値をセット
+	lastDiskStats, _ = disk.IOCounters()
+	lastDiskTime = time.Now()
+
 	return initSocMetrics()
 }
 
@@ -29,12 +49,11 @@ func SampleSocMetrics(duration int) SocMetrics {
 
 // GetCPUPercentages: CPU使用率の計算
 func GetCPUPercentages() ([]float64, error) {
-	// 修正: GetCPUUsage() は []CPUUsage を返す前提
 	currentTimes, err := GetCPUUsage()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if firstRun {
 		lastCPUTimes = currentTimes
 		firstRun = false
@@ -43,7 +62,6 @@ func GetCPUPercentages() ([]float64, error) {
 
 	percentages := make([]float64, len(currentTimes))
 	for i := range currentTimes {
-		// CPU時間の差分計算
 		totalDelta := (currentTimes[i].User - lastCPUTimes[i].User) +
 			(currentTimes[i].System - lastCPUTimes[i].System) +
 			(currentTimes[i].Idle - lastCPUTimes[i].Idle) +
@@ -56,14 +74,14 @@ func GetCPUPercentages() ([]float64, error) {
 		if totalDelta > 0 {
 			percentages[i] = (activeDelta / totalDelta) * 100.0
 		}
-		
+
 		if percentages[i] < 0 {
 			percentages[i] = 0
 		} else if percentages[i] > 100 {
 			percentages[i] = 100
 		}
 	}
-	
+
 	lastCPUTimes = currentTimes
 	return percentages, nil
 }
@@ -82,8 +100,89 @@ func GetMemoryMetrics() MemoryMetrics {
 	}
 }
 
+// GetNetworkRates: ネットワークの送受信速度 (bytes/sec) を返します
+func GetNetworkRates() (float64, float64, error) {
+	currentStats, err := net.IOCounters(false)
+	if err != nil {
+		return 0, 0, err
+	}
+	currentTime := time.Now()
+
+	if len(lastNetStats) == 0 || len(currentStats) == 0 {
+		lastNetStats = currentStats
+		lastNetTime = currentTime
+		return 0, 0, nil
+	}
+
+	duration := currentTime.Sub(lastNetTime).Seconds()
+	if duration <= 0 {
+		return 0, 0, nil
+	}
+
+	sentDiff := float64(currentStats[0].BytesSent - lastNetStats[0].BytesSent)
+	recvDiff := float64(currentStats[0].BytesRecv - lastNetStats[0].BytesRecv)
+
+	sentRate := sentDiff / duration
+	recvRate := recvDiff / duration
+
+	lastNetStats = currentStats
+	lastNetTime = currentTime
+
+	return sentRate, recvRate, nil
+}
+
+// GetDiskRates: ディスクの読み書き速度 (bytes/sec) を返します
+// 戻り値: (readBytesPerSec, writeBytesPerSec, error)
+func GetDiskRates() (float64, float64, error) {
+	currentStats, err := disk.IOCounters() // 全ディスクのMapが返る
+	if err != nil {
+		return 0, 0, err
+	}
+	currentTime := time.Now()
+
+	if len(lastDiskStats) == 0 {
+		lastDiskStats = currentStats
+		lastDiskTime = currentTime
+		return 0, 0, nil
+	}
+
+	duration := currentTime.Sub(lastDiskTime).Seconds()
+	if duration <= 0 {
+		return 0, 0, nil
+	}
+
+	var totalReadDiff, totalWriteDiff float64
+
+	// 各ディスクの差分を合算
+	for name, stat := range currentStats {
+		if lastStat, ok := lastDiskStats[name]; ok {
+			// オーバーフロー対策はgopsutilがuint64で返すのである程度大丈夫だが
+			// 再起動などでリセットされた場合は無視するなどのロジックを入れるのがベター
+			// ここでは単純な差分を取る
+			if stat.ReadBytes >= lastStat.ReadBytes {
+				totalReadDiff += float64(stat.ReadBytes - lastStat.ReadBytes)
+			}
+			if stat.WriteBytes >= lastStat.WriteBytes {
+				totalWriteDiff += float64(stat.WriteBytes - lastStat.WriteBytes)
+			}
+		}
+	}
+
+	readRate := totalReadDiff / duration
+	writeRate := totalWriteDiff / duration
+
+	lastDiskStats = currentStats
+	lastDiskTime = currentTime
+
+	return readRate, writeRate, nil
+}
+
+// GetUptime: システムの稼働時間（秒）を取得
+func GetUptime() (uint64, error) {
+	return host.Uptime()
+}
+
 // formatTime: 秒数を文字列形式(例: 1h02:03)に変換するヘルパー関数
-// processes.go で使用されています
 func formatTime(seconds float64) string {
 	hours := int(seconds) / 3600
 	minutes := (int(seconds) / 60) % 60
@@ -95,15 +194,14 @@ func formatTime(seconds float64) string {
 	}
 	return fmt.Sprintf("%02d:%02d.%02d", minutes, secs, centisecs)
 }
-// --- 以下をファイルの末尾に追記してください ---
 
 // GetCoreCounts: EコアとPコアの数を返します
 func GetCoreCounts() (int, int) {
-	// detection.go にある情報を利用
 	info := getSOCInfo()
 	return info.ECoreCount, info.PCoreCount
 }
+
 // GetSOCInfo: システム情報を外部公開するためのラッパー
 func GetSOCInfo() SystemInfo {
-	return getSOCInfo() // detection.go 内の関数を呼ぶ
+	return getSOCInfo()
 }

@@ -16,6 +16,7 @@ import "C"
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -69,7 +70,8 @@ func getTimebase() {
 	C.mach_timebase_info(&timebaseInfo)
 }
 
-func getProcessList() ([]ProcessMetrics, error) {
+// GetProcessList: フロントエンド向けに公開
+func GetProcessList() ([]ProcessMetrics, error) {
 	mib := []C.int{C.CTL_KERN, C.KERN_PROC, C.KERN_PROC_ALL}
 	var size C.size_t
 
@@ -89,6 +91,7 @@ func getProcessList() ([]ProcessMetrics, error) {
 
 	var processes []ProcessMetrics
 	now := time.Now()
+	logicalCPU := runtime.NumCPU() // 論理コア数取得
 
 	// Capture previous times for delta calc
 	prevProcessTimesMutex.Lock()
@@ -157,7 +160,13 @@ func getProcessList() ([]ProcessMetrics, error) {
 
 			if wallDelta > 0 && timeDelta > 0 { // Avoid divide by zero or negative
 				// cpu = (cpu_delta / wall_delta) * 100
-				cpuPercent = (float64(timeDelta) / float64(wallDelta)) * 100.0
+				val := (float64(timeDelta) / float64(wallDelta)) * 100.0
+				// 論理コア数で割って全体を100%基準にする
+				if logicalCPU > 0 {
+					cpuPercent = val / float64(logicalCPU)
+				} else {
+					cpuPercent = val
+				}
 			}
 		}
 
