@@ -11,6 +11,9 @@ interface HistoryData {
   sent?: number;
   read?: number;
   write?: number;
+  user?: number;
+  sys?: number;
+  swap?: number;
 }
 
 interface MetricState {
@@ -29,6 +32,7 @@ interface MetricState {
   diskStats?: { read: number, write: number };
   gpuCores?: number;
   uptime?: number;
+  cpuDetail?: { user: number, sys: number };
 }
 
 const COLORS = {
@@ -44,6 +48,10 @@ const COLORS = {
   DiskWrite: "#ff4d4d",
   P_Core: "#ce66ff",
   E_Core: "#4da6ff",
+  // 追加カラー
+  CpuUser: "#4da6ff",    // CPUユーザー (青)
+  CpuSys: "#ff4d4d",     // CPUシステム (赤)
+  Swap: "#e040fb",       // スワップ (マゼンタ系)
 };
 
 const theme = {
@@ -64,10 +72,36 @@ function App() {
   const [activeTab, setActiveTab] = useState<'CPU' | 'GPU' | 'ANE' | 'Memory' | 'Network' | 'Disk' | 'Processes'>('CPU');
   const [socTemp, setSocTemp] = useState<number>(0);
   
-  const [showLogical, setShowLogical] = useState<boolean>(false);
+  // 設定のロード/保存
+  const usePersistedState = (key: string, defaultValue: boolean) => {
+    const [state, setState] = useState<boolean>(() => {
+      const saved = localStorage.getItem(key);
+      return saved !== null ? saved === 'true' : defaultValue;
+    });
+    useEffect(() => {
+      localStorage.setItem(key, state.toString());
+    }, [key, state]);
+    return [state, setState] as const;
+  };
+
+  const [showLogical, setShowLogical] = usePersistedState('showLogical', false);
+  const [showSysUser, setShowSysUser] = usePersistedState('showSysUser', false);
+  const [showSwap, setShowSwap] = usePersistedState('showSwap', false);
+
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
 
-  const initialState: MetricState = { current: 0, power: 0, history: Array(60).fill({ time: '', value: 0 }), coresHistory: [] };
+  // 初期状態にプロパティを明示的に含めておくことでundefinedエラーを防ぐ
+  const initialState: MetricState = { 
+      current: 0, 
+      power: 0, 
+      history: Array(60).fill({ 
+          time: '', value: 0, 
+          user: 0, sys: 0, swap: 0,
+          recv: 0, sent: 0, read: 0, write: 0 
+      }), 
+      coresHistory: [],
+      cpuDetail: { user: 0, sys: 0 }
+  };
   
   const [cpu, setCpu] = useState<MetricState>(initialState);
   const [gpu, setGpu] = useState<MetricState>(initialState);
@@ -113,7 +147,8 @@ function App() {
           eCoreCount: stats.eCoreCount,
           pCoreCount: stats.pCoreCount,
           uptime: stats.uptime,
-        });
+          cpuDetail: { user: stats.cpuUser, sys: stats.cpuSystem }
+        }, { user: stats.cpuUser, sys: stats.cpuSystem });
       });
       
       setGpu(prev => updateHistory(prev, stats.gpuUsage, stats.gpuPower, { 
@@ -126,7 +161,7 @@ function App() {
         total: stats.memTotalGB,
         swap: { used: stats.swapUsedGB, total: stats.swapTotalGB },
         extraMetric: stats.dramPower 
-      })); 
+      }, { swap: stats.swapUsedGB })); 
 
       const toMB = (bytes: number) => bytes / 1024 / 1024;
       const netSentMB = toMB(stats.netSent);
@@ -162,7 +197,7 @@ function App() {
   }, [activeTab]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
-    if (activeTab === 'CPU') {
+    if (activeTab === 'CPU' || activeTab === 'Memory') {
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY });
     }
@@ -200,7 +235,10 @@ function App() {
       case 'CPU': return { data: cpu.history, color: COLORS.CPU, label: "Utilization %", max: 100 };
       case 'GPU': return { data: gpu.history, color: COLORS.GPU, label: "Utilization %", max: 100 };
       case 'ANE': return { data: ane.history, color: COLORS.ANE, label: "Est. Utilization %", max: 100 };
-      case 'Memory': return { data: mem.history, color: COLORS.Memory, label: "Usage (GB)", max: mem.total || 'auto' };
+      case 'Memory': 
+        // Swap表示時は合計値を最大にするロジック等は今回は省略し、シンプルに物理メモリを基準にするか、あるいは自動
+        // 今回は物理メモリ(Total)を基準に積む
+        return { data: mem.history, color: COLORS.Memory, label: "Usage (GB)", max: mem.total || 'auto' };
       case 'Network': return { data: net.history, color: COLORS.Network, label: "Traffic (MB/s)", max: 'auto' };
       case 'Disk': return { data: disk.history, color: COLORS.Disk, label: "I/O (MB/s)", max: 'auto' };
       default: return { data: [], color: '#fff', label: '', max: 100 };
@@ -233,7 +271,14 @@ function App() {
   const tooltipFormatter = useCallback((value: any, name: any) => {
       const unit = activeTab === 'Network' || activeTab === 'Disk' ? 'MB/s' : '';
       const valStr = typeof value === 'number' ? formatValue(value) : value;
-      return [`${valStr} ${unit}`, name === 'value' ? activeInfo.label : name];
+      // nameのマッピング
+      let dispName = name;
+      if (name === 'value') dispName = activeInfo.label;
+      if (name === 'user') dispName = 'User';
+      if (name === 'sys') dispName = 'System';
+      if (name === 'swap') dispName = 'Swap';
+      
+      return [`${valStr} ${unit}`, dispName];
   }, [activeTab, activeInfo.label]);
 
   const tooltipContentStyle = useMemo(() => ({ 
@@ -250,12 +295,14 @@ function App() {
       
       {/* サイドバー */}
       <div style={{ width: '240px', backgroundColor: theme.bgSidebar, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${theme.border}`, flexShrink: 0 }}>
-        <SidebarItem title="CPU" value={`${formatValue(cpu.current)}%`} active={activeTab === 'CPU'} onClick={() => setActiveTab('CPU')} color={COLORS.CPU} history={cpu.history} theme={theme} />
-        <SidebarItem title="Memory" value={`${formatValue(mem.current)} GB`} active={activeTab === 'Memory'} onClick={() => setActiveTab('Memory')} color={COLORS.Memory} history={mem.history} theme={theme} />
-        <SidebarItem title="GPU" value={`${formatValue(gpu.current)}%`} active={activeTab === 'GPU'} onClick={() => setActiveTab('GPU')} color={COLORS.GPU} history={gpu.history} theme={theme} />
-        <SidebarItem title="ANE" value={`${formatValue(ane.current)}%`} active={activeTab === 'ANE'} onClick={() => setActiveTab('ANE')} color={COLORS.ANE} history={ane.history} theme={theme} />
+        <SidebarItem title="CPU" value={`${formatValue(cpu.current)}%`} active={activeTab === 'CPU'} onClick={() => setActiveTab('CPU')} color={COLORS.CPU} history={cpu.history} theme={theme} max={100} />
+        <SidebarItem title="Memory" value={`${formatValue(mem.current)} GB`} active={activeTab === 'Memory'} onClick={() => setActiveTab('Memory')} color={COLORS.Memory} history={mem.history} theme={theme} max={mem.total} />
+        <SidebarItem title="GPU" value={`${formatValue(gpu.current)}%`} active={activeTab === 'GPU'} onClick={() => setActiveTab('GPU')} color={COLORS.GPU} history={gpu.history} theme={theme} max={100} />
+        <SidebarItem title="ANE" value={`${formatValue(ane.current)}%`} active={activeTab === 'ANE'} onClick={() => setActiveTab('ANE')} color={COLORS.ANE} history={ane.history} theme={theme} max={100} />
+        
         <SidebarItem title="Network" value={`${formatValue(net.current)} MB/s`} active={activeTab === 'Network'} onClick={() => setActiveTab('Network')} color={COLORS.Network} history={net.history} theme={theme} />
         <SidebarItem title="Disk" value={`${formatValue(disk.current)} MB/s`} active={activeTab === 'Disk'} onClick={() => setActiveTab('Disk')} color={COLORS.Disk} history={disk.history} theme={theme} />
+        
         <div onClick={() => setActiveTab('Processes')} style={{
             padding: '10px 12px', cursor: 'pointer', backgroundColor: activeTab === 'Processes' ? theme.bgActive : 'transparent',
             borderLeft: activeTab === 'Processes' ? `4px solid #fff` : '4px solid transparent', marginBottom: '2px', transition: 'all 0.1s', color: activeTab === 'Processes' ? '#ffffff' : theme.textMain
@@ -332,18 +379,42 @@ function App() {
                   borderRadius: '4px', padding: '4px 0'
                 }} onClick={(e) => e.stopPropagation()}>
                   <div style={{ padding: '6px 12px', color: theme.textSub, fontSize: '11px', borderBottom: `1px solid ${theme.border}` }}>Graph settings</div>
-                  <div 
-                    onClick={() => { setShowLogical(!showLogical); setContextMenu(null); }}
-                    style={{ 
-                      padding: '8px 12px', cursor: 'pointer', color: theme.textMain, display: 'flex', alignItems: 'center',
-                      backgroundColor: 'transparent', fontSize: '13px'
-                    }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = theme.hover}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-                  >
-                    <div style={{ width: '16px', marginRight: '6px' }}>{showLogical && '✓'}</div>
-                    Logical processors
-                  </div>
+                  
+                  {activeTab === 'CPU' && (
+                    <>
+                      <div 
+                        onClick={() => { setShowLogical(!showLogical); setShowSysUser(false); setContextMenu(null); }}
+                        style={{ padding: '8px 12px', cursor: 'pointer', color: theme.textMain, display: 'flex', alignItems: 'center', fontSize: '13px' }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = theme.hover}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                      >
+                        <div style={{ width: '16px', marginRight: '6px' }}>{showLogical && '✓'}</div>
+                        Logical processors
+                      </div>
+                      <div 
+                        onClick={() => { setShowSysUser(!showSysUser); setShowLogical(false); setContextMenu(null); }}
+                        style={{ padding: '8px 12px', cursor: 'pointer', color: theme.textMain, display: 'flex', alignItems: 'center', fontSize: '13px' }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = theme.hover}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                      >
+                        <div style={{ width: '16px', marginRight: '6px' }}>{showSysUser && '✓'}</div>
+                        Show System/User
+                      </div>
+                    </>
+                  )}
+
+                  {activeTab === 'Memory' && (
+                     <div 
+                        onClick={() => { setShowSwap(!showSwap); setContextMenu(null); }}
+                        style={{ padding: '8px 12px', cursor: 'pointer', color: theme.textMain, display: 'flex', alignItems: 'center', fontSize: '13px' }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = theme.hover}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                      >
+                        <div style={{ width: '16px', marginRight: '6px' }}>{showSwap && '✓'}</div>
+                        Show Swap
+                      </div>
+                  )}
+
                 </div>
               )}
 
@@ -358,13 +429,13 @@ function App() {
               ) : (
                 <>
                   <div style={{position: 'absolute', top: 8, right: 12, color: theme.textSub, fontSize: '11px'}}>
-                      {activeTab === 'Memory' && mem.total ? `${formatValue(mem.total)} GB` : 
+                      {activeTab === 'Memory' && mem.total ? (showSwap ? `${mem.swap?.total?.toFixed(1) || 0} GB` : `${formatValue(mem.total)} GB`) : 
                        activeTab === 'Network' || activeTab === 'Disk' ? 'Total Traffic' : '100%'}
                   </div>
                   <div style={{position: 'absolute', bottom: 8, right: 12, color: theme.textSub, fontSize: '11px'}}>0</div>
                   
                   <ResponsiveContainer width="100%" height="100%">
-                    <MainChart data={activeInfo.data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }} key={activeTab}>
+                    <MainChart data={activeInfo.data} margin={{ top: 5, right: 5, left: 5, bottom: 5 }} key={activeTab + showSysUser + showSwap}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme.grid} />
                       <XAxis dataKey="time" hide />
                       <YAxis domain={[0, activeInfo.max]} hide />
@@ -375,15 +446,26 @@ function App() {
                         isAnimationActive={false}
                       />
                       
-                      {activeTab === 'Network' ? (
+                      {/* グラフ描画分岐 */}
+                      {activeTab === 'CPU' && showSysUser ? (
+                        <>
+                          <MainArea type="monotone" dataKey="user" name="User" stroke={COLORS.CpuUser} fill={COLORS.CpuUser} fillOpacity={0.3} strokeWidth={1.5} stackId="1" isAnimationActive={false} />
+                          <MainArea type="monotone" dataKey="sys" name="System" stroke={COLORS.CpuSys} fill={COLORS.CpuSys} fillOpacity={0.3} strokeWidth={1.5} stackId="1" isAnimationActive={false} />
+                        </>
+                      ) : activeTab === 'Memory' && showSwap ? (
+                        <>
+                          <MainArea type="monotone" dataKey="value" name="Memory" stroke={COLORS.Memory} fill={COLORS.Memory} fillOpacity={0.3} strokeWidth={1.5} stackId="1" isAnimationActive={false} />
+                          <MainArea type="monotone" dataKey="swap" name="Swap" stroke={COLORS.Swap} fill={COLORS.Swap} fillOpacity={0.3} strokeWidth={1.5} stackId="1" isAnimationActive={false} />
+                        </>
+                      ) : activeTab === 'Network' ? (
                         <>
                           <MainArea type="monotone" dataKey="recv" name="Download" stroke={COLORS.NetRecv} fill={COLORS.NetRecv} fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
                           <MainArea type="monotone" dataKey="sent" name="Upload" stroke={COLORS.NetSent} fill={COLORS.NetSent} fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
                         </>
                       ) : activeTab === 'Disk' ? (
                         <>
-                          <MainArea type="monotone" dataKey="read" name="Read" stroke={COLORS.DiskRead} fill={COLORS.DiskRead} fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
-                          <MainArea type="monotone" dataKey="write" name="Write" stroke={COLORS.DiskWrite} fill={COLORS.DiskWrite} fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
+                          <MainArea type="monotone" dataKey="read" name="Read" stroke={COLORS.DiskRead} fill={COLORS.DiskRead} fillOpacity={0.2} strokeWidth={2} stackId="1" isAnimationActive={false} />
+                          <MainArea type="monotone" dataKey="write" name="Write" stroke={COLORS.DiskWrite} fill={COLORS.DiskWrite} fillOpacity={0.2} strokeWidth={2} stackId="1" isAnimationActive={false} />
                         </>
                       ) : (
                           <MainArea type="monotone" dataKey="value" stroke={activeInfo.color} fill={activeInfo.color} fillOpacity={0.2} strokeWidth={2} isAnimationActive={false} />
@@ -407,18 +489,28 @@ function App() {
             }}>
               
               <DetailBox 
-                label={activeTab === 'Network' || activeTab === 'Disk' ? "Total Throughput" : "Utilization"} 
+                label={activeTab === 'Network' || activeTab === 'Disk' ? "Total Throughput" : 
+                       (activeTab === 'Memory' && showSwap) ? "Swap Used" : "Utilization"} 
                 value={
+                    (activeTab === 'Memory' && showSwap) ? `${formatValue(mem.swap?.used || 0)} GB` :
                     activeTab === 'Memory' ? `${formatValue(mem.current)} GB` : 
                     activeTab === 'Network' ? `${formatValue(net.current)} MB/s` :
                     activeTab === 'Disk' ? `${formatValue(disk.current)} MB/s` :
                     `${formatValue(activeTab === 'CPU' ? cpu.current : (activeTab === 'GPU' ? gpu.current : ane.current))}%`
                 } 
-                subValue={activeTab === 'Memory' && mem.total ? `/ ${formatValue(mem.total)} GB` : undefined}
+                subValue={activeTab === 'Memory' ? (showSwap ? `/ ${mem.swap?.total?.toFixed(2) || 0} GB` : `/ ${formatValue(mem.total)} GB`) : undefined}
                 theme={theme} 
               />
               
-              {activeTab !== 'Network' && activeTab !== 'Disk' && (
+              {/* CPU詳細: Sys/User表示時 */}
+              {activeTab === 'CPU' && showSysUser && (
+                <>
+                   <DetailBox label="User" value={`${(cpu.cpuDetail?.user || 0).toFixed(1)} %`} theme={theme} color={COLORS.CpuUser} />
+                   <DetailBox label="System" value={`${(cpu.cpuDetail?.sys || 0).toFixed(1)} %`} theme={theme} color={COLORS.CpuSys} />
+                </>
+              )}
+              
+              {activeTab !== 'Network' && activeTab !== 'Disk' && !showSwap && !showSysUser && (
                 <DetailBox label="Power Usage" value={`${(activeTab === 'Memory' ? mem.power : (activeTab === 'CPU' ? cpu.power : (activeTab === 'GPU' ? gpu.power : ane.power))).toFixed(2)} W`} theme={theme} />
               )}
 
@@ -438,11 +530,11 @@ function App() {
                 <DetailBox label="Frequency" value={`${gpu.extraMetric} MHz`} theme={theme} />
               )}
 
-              {activeTab === 'Memory' && mem.extraMetric !== undefined && (
+              {activeTab === 'Memory' && mem.extraMetric !== undefined && !showSwap && (
                 <DetailBox label="DRAM Power" value={`${mem.extraMetric.toFixed(2)} W`} theme={theme} />
               )}
 
-              {activeTab === 'Memory' && mem.swap && (
+              {activeTab === 'Memory' && mem.swap && !showSwap && (
                 <DetailBox label="Swap Used" value={`${mem.swap.used.toFixed(2)} GB`} subValue={`/ ${mem.swap.total.toFixed(2)} GB`} theme={theme} />
               )}
 
@@ -478,7 +570,7 @@ function App() {
   );
 }
 
-// --- コンポーネント定義を外に出して再利用可能かつ安定させる ---
+// ... MiniCoreGraph, CpuLogicalView, SidebarItem, DetailBox は前回と同じ定義
 const MiniCoreGraph = ({ history, color, opacity = 0.3 }: any) => (
   <ResponsiveContainer width="100%" height="100%">
     <AreaChart data={history} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
@@ -488,7 +580,6 @@ const MiniCoreGraph = ({ history, color, opacity = 0.3 }: any) => (
   </ResponsiveContainer>
 );
 
-// --- 論理プロセッサ表示 (枠いっぱい埋め込み版) ---
 const CpuLogicalView = ({ cores, histories, eCount, pCount, theme }: { cores: number[], histories: HistoryData[][], eCount: number, pCount: number, theme: any }) => {
   const eCores = cores.slice(0, eCount);
   const eHistories = histories.slice(0, eCount);
@@ -569,7 +660,7 @@ const CpuLogicalView = ({ cores, histories, eCount, pCount, theme }: { cores: nu
   );
 };
 
-const SidebarItem = ({ title, value, active, onClick, color, history, theme }: any) => (
+const SidebarItem = ({ title, value, active, onClick, color, history, theme, max }: any) => (
   <div onClick={onClick} style={{
     padding: '10px 12px', cursor: 'pointer', backgroundColor: active ? theme.bgActive : 'transparent',
     borderLeft: active ? `4px solid ${color}` : '4px solid transparent', marginBottom: '2px', transition: 'all 0.1s', color: active ? '#ffffff' : theme.textMain
@@ -580,6 +671,7 @@ const SidebarItem = ({ title, value, active, onClick, color, history, theme }: a
         <div style={{ width: '70px', height: '35px' }}>
            <ResponsiveContainer width="100%" height="100%">
              <AreaChart data={history} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+               <YAxis domain={[0, max || 'auto']} hide />
                <Area type="monotone" dataKey="value" stroke={color} fill={color} fillOpacity={0.3} strokeWidth={1.5} isAnimationActive={false} />
              </AreaChart>
            </ResponsiveContainer>
