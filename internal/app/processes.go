@@ -23,7 +23,7 @@ import (
 	"unsafe"
 )
 
-// Global variables moved from app.go
+// Global variables
 var uidCache = make(map[uint32]string)
 var uidCacheMutex sync.RWMutex
 
@@ -38,12 +38,10 @@ func getUsername(uid uint32) string {
 	uidCacheMutex.Lock()
 	defer uidCacheMutex.Unlock()
 
-	// Double check
 	if name, ok := uidCache[uid]; ok {
 		return name
 	}
 
-	// Use C.getpwuid
 	pwd := C.getpwuid(C.uid_t(uid))
 	if pwd != nil {
 		name = C.GoString(pwd.pw_name)
@@ -55,14 +53,13 @@ func getUsername(uid uint32) string {
 }
 
 type ProcessTimeState struct {
-	Time      uint64 // Total CPU Time (user + system) in nanoseconds
+	Time      uint64
 	Timestamp time.Time
 }
 
 var prevProcessTimes = make(map[int]ProcessTimeState)
 var prevProcessTimesMutex sync.Mutex
 
-// Timebase info for converting mach ticks to ns
 var timebaseInfo C.mach_timebase_info_data_t
 var timebaseOnce sync.Once
 
@@ -70,17 +67,14 @@ func getTimebase() {
 	C.mach_timebase_info(&timebaseInfo)
 }
 
-// GetProcessList: フロントエンド向けに公開
 func GetProcessList() ([]ProcessMetrics, error) {
 	mib := []C.int{C.CTL_KERN, C.KERN_PROC, C.KERN_PROC_ALL}
 	var size C.size_t
 
-	// Get buffer size
 	if _, err := C.sysctl(&mib[0], 3, nil, &size, nil, 0); err != nil {
 		return nil, fmt.Errorf("sysctl size check failed: %v", err)
 	}
 
-	// Allocate buffer
 	buf := make([]byte, size)
 	if _, err := C.sysctl(&mib[0], 3, unsafe.Pointer(&buf[0]), &size, nil, 0); err != nil {
 		return nil, fmt.Errorf("sysctl fetch failed: %v", err)
@@ -91,19 +85,13 @@ func GetProcessList() ([]ProcessMetrics, error) {
 
 	var processes []ProcessMetrics
 	now := time.Now()
-	logicalCPU := runtime.NumCPU() // 論理コア数取得
+	logicalCPU := runtime.NumCPU()
 
-	// Capture previous times for delta calc
 	prevProcessTimesMutex.Lock()
 	defer prevProcessTimesMutex.Unlock()
 
-	// New cache to replace the old one (handling process termination cleanup implicitly)
-	// Efficient way: create Next map.
 	nextProcessTimes := make(map[int]ProcessTimeState)
 
-	// Get Total Memory for % Calculation via sysctl
-	// CTL_HW = 6, HW_MEMSIZE = 24
-	// usage: sysctl([CTL_HW, HW_MEMSIZE])
 	mibMem := []C.int{6, 24}
 	var memSize C.uint64_t
 	memLen := C.size_t(unsafe.Sizeof(memSize))
@@ -112,13 +100,12 @@ func GetProcessList() ([]ProcessMetrics, error) {
 		totalMem = uint64(memSize)
 	}
 
-	// Init timebase once
 	timebaseOnce.Do(getTimebase)
 	numer := uint64(timebaseInfo.numer)
 	denom := uint64(timebaseInfo.denom)
 	if denom == 0 {
 		denom = 1
-	} // safety
+	}
 
 	for _, kp := range kprocs {
 		pid := int(kp.kp_proc.p_pid)
@@ -128,14 +115,12 @@ func GetProcessList() ([]ProcessMetrics, error) {
 
 		comm := C.GoString(&kp.kp_proc.p_comm[0])
 
-		// Try to get full command name via proc_pidpath
 		var pathBuf [C.PROC_PIDPATHINFO_MAXSIZE]C.char
 		if C.proc_pidpath(C.int(pid), unsafe.Pointer(&pathBuf), C.PROC_PIDPATHINFO_MAXSIZE) > 0 {
 			fullPath := C.GoString(&pathBuf[0])
 			comm = filepath.Base(fullPath)
 		}
 
-		// Get Task Info (Memory & Time) via libproc
 		rssBytes := int64(0)
 		vszBytes := int64(0)
 		totalTimeNs := uint64(0)
@@ -145,23 +130,17 @@ func GetProcessList() ([]ProcessMetrics, error) {
 		if ret == C.int(C.sizeof_struct_proc_taskinfo) {
 			rssBytes = int64(taskInfo.pti_resident_size)
 			vszBytes = int64(taskInfo.pti_virtual_size)
-
-			// Convert Mach Ticks to Nanoseconds
-			// time_ns = ticks * (numer / denom)
 			rawTime := uint64(taskInfo.pti_total_user) + uint64(taskInfo.pti_total_system)
 			totalTimeNs = (rawTime * numer) / denom
 		}
 
-		// CPU Calculation (Delta)
 		cpuPercent := 0.0
 		if prevState, ok := prevProcessTimes[pid]; ok {
 			timeDelta := totalTimeNs - prevState.Time
 			wallDelta := now.Sub(prevState.Timestamp).Nanoseconds()
 
-			if wallDelta > 0 && timeDelta > 0 { // Avoid divide by zero or negative
-				// cpu = (cpu_delta / wall_delta) * 100
+			if wallDelta > 0 && timeDelta > 0 {
 				val := (float64(timeDelta) / float64(wallDelta)) * 100.0
-				// 論理コア数で割って全体を100%基準にする
 				if logicalCPU > 0 {
 					cpuPercent = val / float64(logicalCPU)
 				} else {
@@ -170,13 +149,11 @@ func GetProcessList() ([]ProcessMetrics, error) {
 			}
 		}
 
-		// Update state for next run
 		nextProcessTimes[pid] = ProcessTimeState{
 			Time:      totalTimeNs,
 			Timestamp: now,
 		}
 
-		// Memory Calculation
 		memPercent := 0.0
 		if totalMem > 0 {
 			memPercent = (float64(rssBytes) / float64(totalMem)) * 100.0
@@ -201,27 +178,24 @@ func GetProcessList() ([]ProcessMetrics, error) {
 		uid := uint32(kp.kp_eproc.e_ucred.cr_uid)
 		user := getUsername(uid)
 
-		// Format time string
-		// totalTimeNs is nanoseconds.
 		totalSeconds := float64(totalTimeNs) / 1e9
 		timeStr := formatTime(totalSeconds)
 
+		// 修正: LastUpdated を削除
 		processes = append(processes, ProcessMetrics{
-			PID:         pid,
-			User:        user,
-			CPU:         cpuPercent,
-			Memory:      memPercent,
-			VSZ:         vszBytes / 1024, // KB
-			RSS:         rssBytes / 1024, // KB
-			Command:     comm,
-			State:       state,
-			Started:     "",
-			Time:        timeStr,
-			LastUpdated: now,
+			PID:     pid,
+			User:    user,
+			CPU:     cpuPercent,
+			Memory:  memPercent,
+			VSZ:     vszBytes / 1024,
+			RSS:     rssBytes / 1024,
+			Command: comm,
+			State:   state,
+			Started: "",
+			Time:    timeStr,
 		})
 	}
 
-	// Swap map
 	prevProcessTimes = nextProcessTimes
 
 	sort.Slice(processes, func(i, j int) bool {

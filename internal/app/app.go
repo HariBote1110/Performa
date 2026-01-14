@@ -26,11 +26,9 @@ var (
 
 // InitSocMetrics: ハードウェアレポートシステム（ioreport）の初期化
 func InitSocMetrics() error {
-	// ネットワーク統計の初期値をセット
 	lastNetStats, _ = net.IOCounters(false)
 	lastNetTime = time.Now()
 
-	// ディスク統計の初期値をセット
 	lastDiskStats, _ = disk.IOCounters()
 	lastDiskTime = time.Now()
 
@@ -48,42 +46,70 @@ func SampleSocMetrics(duration int) SocMetrics {
 }
 
 // GetCPUPercentages: CPU使用率の計算
-func GetCPUPercentages() ([]float64, error) {
+// 戻り値: (Total[], User[], Sys[], AvgUser, AvgSys, error)
+func GetCPUPercentages() ([]float64, []float64, []float64, float64, float64, error) {
 	currentTimes, err := GetCPUUsage()
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, 0, 0, err
 	}
 
 	if firstRun {
 		lastCPUTimes = currentTimes
 		firstRun = false
-		return make([]float64, len(currentTimes)), nil
+		count := len(currentTimes)
+		return make([]float64, count), make([]float64, count), make([]float64, count), 0, 0, nil
 	}
 
-	percentages := make([]float64, len(currentTimes))
-	for i := range currentTimes {
-		totalDelta := (currentTimes[i].User - lastCPUTimes[i].User) +
-			(currentTimes[i].System - lastCPUTimes[i].System) +
-			(currentTimes[i].Idle - lastCPUTimes[i].Idle) +
-			(currentTimes[i].Nice - lastCPUTimes[i].Nice)
+	count := len(currentTimes)
+	totalPercents := make([]float64, count)
+	userPercents := make([]float64, count)
+	sysPercents := make([]float64, count)
 
-		activeDelta := (currentTimes[i].User - lastCPUTimes[i].User) +
-			(currentTimes[i].System - lastCPUTimes[i].System) +
-			(currentTimes[i].Nice - lastCPUTimes[i].Nice)
+	var sumUserDelta, sumSysDelta, sumTotalDelta float64
+
+	for i := range currentTimes {
+		userDelta := currentTimes[i].User - lastCPUTimes[i].User
+		sysDelta := currentTimes[i].System - lastCPUTimes[i].System
+		idleDelta := currentTimes[i].Idle - lastCPUTimes[i].Idle
+		niceDelta := currentTimes[i].Nice - lastCPUTimes[i].Nice
+
+		totalDelta := userDelta + sysDelta + idleDelta + niceDelta
+		activeDelta := userDelta + sysDelta + niceDelta
+
+		// 全体集計用
+		sumUserDelta += (userDelta + niceDelta)
+		sumSysDelta += sysDelta
+		sumTotalDelta += totalDelta
 
 		if totalDelta > 0 {
-			percentages[i] = (activeDelta / totalDelta) * 100.0
+			totalPercents[i] = (activeDelta / totalDelta) * 100.0
+			userPercents[i] = ((userDelta + niceDelta) / totalDelta) * 100.0
+			sysPercents[i] = (sysDelta / totalDelta) * 100.0
 		}
 
-		if percentages[i] < 0 {
-			percentages[i] = 0
-		} else if percentages[i] > 100 {
-			percentages[i] = 100
+		// クランプ処理
+		if totalPercents[i] > 100 {
+			totalPercents[i] = 100
+		}
+		if userPercents[i] > 100 {
+			userPercents[i] = 100
+		}
+		if sysPercents[i] > 100 {
+			sysPercents[i] = 100
 		}
 	}
 
 	lastCPUTimes = currentTimes
-	return percentages, nil
+
+	// 全体のUser/System使用率
+	avgUser := 0.0
+	avgSys := 0.0
+	if sumTotalDelta > 0 {
+		avgUser = (sumUserDelta / sumTotalDelta) * 100.0
+		avgSys = (sumSysDelta / sumTotalDelta) * 100.0
+	}
+
+	return totalPercents, userPercents, sysPercents, avgUser, avgSys, nil
 }
 
 // GetMemoryMetrics: メモリ情報の取得
@@ -132,9 +158,8 @@ func GetNetworkRates() (float64, float64, error) {
 }
 
 // GetDiskRates: ディスクの読み書き速度 (bytes/sec) を返します
-// 戻り値: (readBytesPerSec, writeBytesPerSec, error)
 func GetDiskRates() (float64, float64, error) {
-	currentStats, err := disk.IOCounters() // 全ディスクのMapが返る
+	currentStats, err := disk.IOCounters()
 	if err != nil {
 		return 0, 0, err
 	}
@@ -153,12 +178,8 @@ func GetDiskRates() (float64, float64, error) {
 
 	var totalReadDiff, totalWriteDiff float64
 
-	// 各ディスクの差分を合算
 	for name, stat := range currentStats {
 		if lastStat, ok := lastDiskStats[name]; ok {
-			// オーバーフロー対策はgopsutilがuint64で返すのである程度大丈夫だが
-			// 再起動などでリセットされた場合は無視するなどのロジックを入れるのがベター
-			// ここでは単純な差分を取る
 			if stat.ReadBytes >= lastStat.ReadBytes {
 				totalReadDiff += float64(stat.ReadBytes - lastStat.ReadBytes)
 			}

@@ -13,8 +13,6 @@ export namespace app {
 	    Started: string;
 	    Time: string;
 	    Command: string;
-	    // Go type: time
-	    LastUpdated: any;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProcessMetrics(source);
@@ -34,26 +32,7 @@ export namespace app {
 	        this.Started = source["Started"];
 	        this.Time = source["Time"];
 	        this.Command = source["Command"];
-	        this.LastUpdated = this.convertValues(source["LastUpdated"], null);
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 
 }
@@ -63,8 +42,12 @@ export namespace main {
 	export class SystemStats {
 	    systemName: string;
 	    cpuUsage: number;
+	    cpuUser: number;
+	    cpuSystem: number;
 	    cpuPower: number;
 	    cpuCores: number[];
+	    cpuCoresUser: number[];
+	    cpuCoresSystem: number[];
 	    eCoreCount: number;
 	    pCoreCount: number;
 	    gpuUsage: number;
@@ -93,8 +76,12 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.systemName = source["systemName"];
 	        this.cpuUsage = source["cpuUsage"];
+	        this.cpuUser = source["cpuUser"];
+	        this.cpuSystem = source["cpuSystem"];
 	        this.cpuPower = source["cpuPower"];
 	        this.cpuCores = source["cpuCores"];
+	        this.cpuCoresUser = source["cpuCoresUser"];
+	        this.cpuCoresSystem = source["cpuCoresSystem"];
 	        this.eCoreCount = source["eCoreCount"];
 	        this.pCoreCount = source["pCoreCount"];
 	        this.gpuUsage = source["gpuUsage"];

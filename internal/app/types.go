@@ -1,9 +1,5 @@
 package app
 
-import (
-	"time"
-)
-
 type CPUUsage struct {
 	User   float64
 	System float64
@@ -48,12 +44,12 @@ type GPUMetrics struct {
 	Temp          float32
 }
 
+// 修正: LastUpdated (time.Time) を削除してWailsの警告を回避
 type ProcessMetrics struct {
 	PID                                      int
 	CPU, LastTime, Memory                    float64
 	VSZ, RSS                                 int64
 	User, TTY, State, Started, Time, Command string
-	LastUpdated                              time.Time
 }
 
 type MemoryMetrics struct {
@@ -62,40 +58,4 @@ type MemoryMetrics struct {
 	Available uint64 `json:"available"`
 	SwapTotal uint64 `json:"swap_total"`
 	SwapUsed  uint64 `json:"swap_used"`
-}
-
-type EventThrottler struct {
-	timer       *time.Timer
-	gracePeriod time.Duration
-	C           chan struct{}
-}
-
-func NewEventThrottler(gracePeriod time.Duration) *EventThrottler {
-	return &EventThrottler{
-		timer:       nil,
-		gracePeriod: gracePeriod,
-		C:           make(chan struct{}, 1),
-	}
-}
-
-func NewCPUMetrics() CPUMetrics {
-	return CPUMetrics{
-		CoreMetrics: make(map[string]int),
-		ECores:      make([]int, 0),
-		PCores:      make([]int, 0),
-	}
-}
-
-func (e *EventThrottler) Notify() {
-	if e.timer != nil {
-		return
-	}
-
-	e.timer = time.AfterFunc(e.gracePeriod, func() {
-		e.timer = nil
-		select {
-		case e.C <- struct{}{}:
-		default:
-		}
-	})
 }

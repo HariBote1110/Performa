@@ -32,29 +32,33 @@ func (a *App) shutdown(ctx context.Context) {
 
 // UIに渡すデータ構造
 type SystemStats struct {
-	SystemName   string    `json:"systemName"`
-	CpuUsage     float64   `json:"cpuUsage"`
-	CpuPower     float64   `json:"cpuPower"`
-	CpuCores     []float64 `json:"cpuCores"`
-	ECoreCount   int       `json:"eCoreCount"`
-	PCoreCount   int       `json:"pCoreCount"`
-	GpuUsage     float64   `json:"gpuUsage"`
-	GpuPower     float64   `json:"gpuPower"`
-	GpuFreq      float64   `json:"gpuFreq"`
-	GpuCoreCount int       `json:"gpuCoreCount"` // 追加
-	AneUsage     float64   `json:"aneUsage"`
-	AnePower     float64   `json:"anePower"`
-	MemUsedGB    float64   `json:"memUsedGB"`
-	MemTotalGB   float64   `json:"memTotalGB"`
-	SwapUsedGB   float64   `json:"swapUsedGB"`
-	SwapTotalGB  float64   `json:"swapTotalGB"`
-	DramPower    float64   `json:"dramPower"`
-	SocTemp      float64   `json:"socTemp"`
-	NetSent      float64   `json:"netSent"`
-	NetRecv      float64   `json:"netRecv"`
-	DiskRead     float64   `json:"diskRead"` // 追加: Bytes/s
-	DiskWrite    float64   `json:"diskWrite"` // 追加: Bytes/s
-	Uptime       uint64    `json:"uptime"`   // 追加: 秒
+	SystemName     string    `json:"systemName"`
+	CpuUsage       float64   `json:"cpuUsage"`
+	CpuUser        float64   `json:"cpuUser"`
+	CpuSystem      float64   `json:"cpuSystem"`
+	CpuPower       float64   `json:"cpuPower"`
+	CpuCores       []float64 `json:"cpuCores"`       // コア合計
+	CpuCoresUser   []float64 `json:"cpuCoresUser"`   // コアUser内訳
+	CpuCoresSystem []float64 `json:"cpuCoresSystem"` // コアSystem内訳
+	ECoreCount     int       `json:"eCoreCount"`
+	PCoreCount     int       `json:"pCoreCount"`
+	GpuUsage       float64   `json:"gpuUsage"`
+	GpuPower       float64   `json:"gpuPower"`
+	GpuFreq        float64   `json:"gpuFreq"`
+	GpuCoreCount   int       `json:"gpuCoreCount"`
+	AneUsage       float64   `json:"aneUsage"`
+	AnePower       float64   `json:"anePower"`
+	MemUsedGB      float64   `json:"memUsedGB"`
+	MemTotalGB     float64   `json:"memTotalGB"`
+	SwapUsedGB     float64   `json:"swapUsedGB"`
+	SwapTotalGB    float64   `json:"swapTotalGB"`
+	DramPower      float64   `json:"dramPower"`
+	SocTemp        float64   `json:"socTemp"`
+	NetSent        float64   `json:"netSent"`
+	NetRecv        float64   `json:"netRecv"`
+	DiskRead       float64   `json:"diskRead"`
+	DiskWrite      float64   `json:"diskWrite"`
+	Uptime         uint64    `json:"uptime"`
 }
 
 func (a *App) collectMetricsLoop() {
@@ -63,14 +67,15 @@ func (a *App) collectMetricsLoop() {
 
 	for {
 		m := metrics.SampleSocMetrics(500)
-		cpuPercents, _ := metrics.GetCPUPercentages()
+		// 修正: 拡張された戻り値を受け取る
+		cpuPercents, cpuCoresUser, cpuCoresSys, avgUser, avgSys, _ := metrics.GetCPUPercentages()
+
 		memStats := metrics.GetMemoryMetrics()
-		// GetCoreCountsは毎回呼ぶ必要はないが、GetSOCInfoでGPUコア数も取るのでここで呼んでもOK
 		infoRealtime := metrics.GetSOCInfo()
-		
+
 		netSent, netRecv, _ := metrics.GetNetworkRates()
-		diskRead, diskWrite, _ := metrics.GetDiskRates() // Disk I/O
-		uptime, _ := metrics.GetUptime()                 // Uptime
+		diskRead, diskWrite, _ := metrics.GetDiskRates()
+		uptime, _ := metrics.GetUptime()
 
 		var avgCpu float64
 		if len(cpuPercents) > 0 {
@@ -88,29 +93,33 @@ func (a *App) collectMetricsLoop() {
 		}
 
 		newStats := SystemStats{
-			SystemName:   systemName,
-			CpuUsage:     avgCpu,
-			CpuPower:     m.CPUPower,
-			CpuCores:     cpuPercents,
-			ECoreCount:   infoRealtime.ECoreCount,
-			PCoreCount:   infoRealtime.PCoreCount,
-			GpuUsage:     m.GPUActive,
-			GpuPower:     m.GPUPower,
-			GpuFreq:      float64(m.GPUFreqMHz),
-			GpuCoreCount: infoRealtime.GPUCoreCount, // GPUコア数
-			AneUsage:     anePercent,
-			AnePower:     m.ANEPower,
-			MemUsedGB:    float64(memStats.Used) / 1024 / 1024 / 1024,
-			MemTotalGB:   float64(memStats.Total) / 1024 / 1024 / 1024,
-			SwapUsedGB:   float64(memStats.SwapUsed) / 1024 / 1024 / 1024,
-			SwapTotalGB:  float64(memStats.SwapTotal) / 1024 / 1024 / 1024,
-			DramPower:    m.DRAMPower,
-			SocTemp:      float64(m.SocTemp),
-			NetSent:      netSent,
-			NetRecv:      netRecv,
-			DiskRead:     diskRead,  // Disk Read
-			DiskWrite:    diskWrite, // Disk Write
-			Uptime:       uptime,    // Uptime
+			SystemName:     systemName,
+			CpuUsage:       avgCpu,
+			CpuUser:        avgUser,
+			CpuSystem:      avgSys,
+			CpuPower:       m.CPUPower,
+			CpuCores:       cpuPercents,
+			CpuCoresUser:   cpuCoresUser, // 追加
+			CpuCoresSystem: cpuCoresSys,  // 追加
+			ECoreCount:     infoRealtime.ECoreCount,
+			PCoreCount:     infoRealtime.PCoreCount,
+			GpuUsage:       m.GPUActive,
+			GpuPower:       m.GPUPower,
+			GpuFreq:        float64(m.GPUFreqMHz),
+			GpuCoreCount:   infoRealtime.GPUCoreCount,
+			AneUsage:       anePercent,
+			AnePower:       m.ANEPower,
+			MemUsedGB:      float64(memStats.Used) / 1024 / 1024 / 1024,
+			MemTotalGB:     float64(memStats.Total) / 1024 / 1024 / 1024,
+			SwapUsedGB:     float64(memStats.SwapUsed) / 1024 / 1024 / 1024,
+			SwapTotalGB:    float64(memStats.SwapTotal) / 1024 / 1024 / 1024,
+			DramPower:      m.DRAMPower,
+			SocTemp:        float64(m.SocTemp),
+			NetSent:        netSent,
+			NetRecv:        netRecv,
+			DiskRead:       diskRead,
+			DiskWrite:      diskWrite,
+			Uptime:         uptime,
 		}
 
 		a.mu.Lock()
@@ -127,7 +136,6 @@ func (a *App) GetStats() SystemStats {
 	return a.latestStats
 }
 
-// GetProcesses: プロセスリストを取得
 func (a *App) GetProcesses() []metrics.ProcessMetrics {
 	procs, err := metrics.GetProcessList()
 	if err != nil {
