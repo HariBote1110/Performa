@@ -85,6 +85,7 @@ function App() {
   const [showLogical, setShowLogical] = usePersistedState('showLogical', false);
   const [showSysUser, setShowSysUser] = usePersistedState('showSysUser', false);
   const [showSwap, setShowSwap] = usePersistedState('showSwap', false);
+  const [useBitsPerSecond, setUseBitsPerSecond] = usePersistedState('useBitsPerSecond', false);
 
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number } | null>(null);
 
@@ -198,7 +199,7 @@ function App() {
   }, [activeTab]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
-    if (activeTab === 'CPU' || activeTab === 'Memory') {
+    if (activeTab === 'CPU' || activeTab === 'Memory' || activeTab === 'Network') {
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY });
     }
@@ -269,6 +270,13 @@ function App() {
     return `${bytes.toFixed(0)} B`;
   };
   const formatNet = (bytes: number) => {
+    if (useBitsPerSecond) {
+      const bits = bytes * 8;
+      if (bits > 1024 * 1024 * 1024) return `${(bits / 1024 / 1024 / 1024).toFixed(2)} Gbps`;
+      if (bits > 1024 * 1024) return `${(bits / 1024 / 1024).toFixed(2)} Mbps`;
+      if (bits > 1024) return `${(bits / 1024).toFixed(1)} Kbps`;
+      return `${bits.toFixed(0)} bps`;
+    }
     if (bytes > 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB/s`;
     if (bytes > 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB/s`;
     if (bytes > 1024) return `${(bytes / 1024).toFixed(1)} KB/s`;
@@ -314,7 +322,7 @@ function App() {
         <SidebarItem title="GPU" value={`${formatValue(gpu.current)}%`} active={activeTab === 'GPU'} onClick={() => setActiveTab('GPU')} color={COLORS.GPU} history={gpu.history} theme={theme} max={100} />
         <SidebarItem title="ANE" value={`${formatValue(ane.current)}%`} active={activeTab === 'ANE'} onClick={() => setActiveTab('ANE')} color={COLORS.ANE} history={ane.history} theme={theme} max={100} />
 
-        <SidebarItem title="Network" value={`${formatValue(net.current)} MB/s`} active={activeTab === 'Network'} onClick={() => setActiveTab('Network')} color={COLORS.Network} history={net.history} theme={theme} />
+        <SidebarItem title="Network" value={useBitsPerSecond ? formatNet(net.current * 1024 * 1024) : `${formatValue(net.current)} MB/s`} active={activeTab === 'Network'} onClick={() => setActiveTab('Network')} color={COLORS.Network} history={net.history} theme={theme} />
         <SidebarItem title="Disk" value={`${formatValue(disk.current)} MB/s`} active={activeTab === 'Disk'} onClick={() => setActiveTab('Disk')} color={COLORS.Disk} history={disk.history} theme={theme} />
 
         <div onClick={() => setActiveTab('Processes')} style={{
@@ -450,6 +458,18 @@ function App() {
                     </div>
                   )}
 
+                  {activeTab === 'Network' && (
+                    <div
+                      onClick={() => { setUseBitsPerSecond(!useBitsPerSecond); setContextMenu(null); }}
+                      style={{ padding: '8px 12px', cursor: 'pointer', color: theme.textMain, display: 'flex', alignItems: 'center', fontSize: '13px' }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = theme.hover}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                    >
+                      <div style={{ width: '16px', marginRight: '6px' }}>{useBitsPerSecond && '✓'}</div>
+                      Display in bits (bps)
+                    </div>
+                  )}
+
                 </div>
               )}
 
@@ -466,7 +486,8 @@ function App() {
                 <>
                   <div style={{ position: 'absolute', top: 8, right: 12, color: theme.textSub, fontSize: '11px' }}>
                     {activeTab === 'Memory' && mem.total ? (showSwap ? `${((mem.total + (mem.swap?.total || 0))).toFixed(2)} GB` : `${formatValue(mem.total)} GB`) :
-                      activeTab === 'Network' || activeTab === 'Disk' ? 'Total Traffic' : '100%'}
+                      activeTab === 'Network' ? (useBitsPerSecond ? 'Throughput (bps)' : 'Throughput (MB/s)') :
+                        activeTab === 'Disk' ? 'Total Traffic' : '100%'}
                   </div>
                   <div style={{ position: 'absolute', bottom: 8, right: 12, color: theme.textSub, fontSize: '11px' }}>0</div>
 
@@ -528,7 +549,7 @@ function App() {
                 label={activeTab === 'Network' || activeTab === 'Disk' ? "Total Throughput" : "Utilization"}
                 value={
                   activeTab === 'Memory' ? `${formatValue(mem.current)} GB` :
-                    activeTab === 'Network' ? `${formatValue(net.current)} MB/s` :
+                    activeTab === 'Network' ? (useBitsPerSecond ? formatNet(net.current * 1024 * 1024) : `${formatValue(net.current)} MB/s`) :
                       activeTab === 'Disk' ? `${formatValue(disk.current)} MB/s` :
                         `${formatValue(activeTab === 'CPU' ? cpu.current : (activeTab === 'GPU' ? gpu.current : ane.current))}%`
                 }
