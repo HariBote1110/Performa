@@ -9,5 +9,8 @@
   "author": {
     "name": "HariBote1110",
     "email": "86110351+HariBote1110@users.noreply.github.com"
+  },
+  "mac": {
+    "signingIdentity": "-"
   }
 }
